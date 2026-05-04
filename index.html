@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>AR Text Detection</title>
+    <!-- นำเข้า A-Frame สำหรับสร้าง 3D/AR -->
+    <script src="https://aframe.io/releases/1.4.0/aframe.min.js"></script>
+    <!-- นำเข้า Tesseract.js สำหรับทำ OCR -->
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+    
+    <style>
+        /* ตกแต่ง UI ปุ่มกดให้อยู่ทับบนกล้อง */
+        #ui-container {
+            position: absolute;
+            bottom: 30px;
+            width: 100%;
+            text-align: center;
+            z-index: 999; /* ให้อยู่บนสุด */
+        }
+        #scan-btn {
+            padding: 15px 30px;
+            font-size: 18px;
+            font-weight: bold;
+            background-color: #ff3b30;
+            color: white;
+            border: none;
+            border-radius: 25px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+            cursor: pointer;
+        }
+        #scan-btn:active { background-color: #cc2d24; }
+        #status-text {
+            color: white;
+            font-size: 16px;
+            margin-top: 10px;
+            text-shadow: 1px 1px 2px black;
+        }
+    </style>
+</head>
+<body style="margin: 0; overflow: hidden;">
+
+    <!-- UI Overlay สำหรับกดสแกน -->
+    <div id="ui-container">
+        <button id="scan-btn">🔍 สแกนหาตัวอักษร</button>
+        <div id="status-text">พร้อมใช้งาน</div>
+    </div>
+
+    <!-- ส่วนของ A-Frame สำหรับแสดงผลกล้องและวัตถุ 3 มิติ -->
+    <!-- ใส่ vr-mode-ui="enabled: false" เพื่อปิดปุ่มแว่น VR มุมขวาล่าง -->
+    <a-scene embedded vr-mode-ui="enabled: true">
+        <!-- กล้องจำลองที่ผู้ใช้มองเห็น -->
+        <a-camera id="user-camera" position="0 1.6 0"></a-camera>
+    </a-scene>
+
+    <!-- ซ่อน Video และ Canvas ไว้ใช้ประมวลผลภาพเบื้องหลัง -->
+    <video id="camera-feed" autoplay playsinline style="display:none;"></video>
+    <canvas id="snapshot-canvas" style="display:none;"></canvas>
+
+    <script>
+        const scanBtn = document.getElementById('scan-btn');
+        const statusText = document.getElementById('status-text');
+        const video = document.getElementById('camera-feed');
+        const canvas = document.getElementById('snapshot-canvas');
+        const context = canvas.getContext('2d');
+        const scene = document.querySelector('a-scene');
+        const camera = document.getElementById('user-camera');
+
+        // 1. เปิดใช้งานกล้องหลังของมือถือ
+        navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } })
+            .then(stream => {
+                video.srcObject = stream;
+            })
+            .catch(err => {
+                console.error("Error accessing camera:", err);
+                statusText.innerText = "❌ ไม่สามารถเข้าถึงกล้องได้";
+            });
+
+        // 2. เมื่อกดปุ่มสแกน
+        scanBtn.addEventListener('click', async () => {
+            statusText.innerText = "⏳ กำลังสแกน... กรุณารอสักครู่";
+            scanBtn.disabled = true;
+
+            // ดึงภาพจากวิดีโอมาใส่ Canvas
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+            try {
+                // 3. ส่งภาพไปให้ Tesseract.js อ่านตัวอักษร
+                const result = await Tesseract.recognize(canvas, 'eng', {
+                    logger: m => console.log(m) // ดู Log การโหลดใน Console ได้
+                });
+
+                const words = result.data.words;
+                
+                // ล้างตัวอักษรเก่าที่เคยสแกนออกไปก่อน
+                document.querySelectorAll('.ar-text').forEach(el => el.remove());
+
+                if (words.length === 0) {
+                    statusText.innerText = "🤷‍♂️ ไม่พบตัวอักษรภาษาอังกฤษ";
+                } else {
+                    statusText.innerText = `✅ พบ ${words.length} คำ!`;
+                    
+                    // 4. นำคำที่ได้มาสร้างเป็น 3D Text
+                    words.forEach(word => {
+                        // ดึงพิกัด (Bounding Box) ของคำในภาพ 2 มิติ
+                        const bbox = word.bbox;
+                        const screenX = (bbox.x0 + bbox.x1) / 2;
+                        const screenY = (bbox.y0 + bbox.y1) / 2;
+
+                        // แปลงพิกัด 2D (หน้าจอ) ให้กลายเป็น 3D แบบคร่าวๆ
+                        const normX = (screenX / canvas.width) * 2 - 1;
+                        const normY = -(screenY / canvas.height) * 2 + 1;
+
+                        // สร้าง Element ตัวอักษร 3 มิติ
+                        const textEl = document.createElement('a-text');
+                        textEl.setAttribute('value', word.text);
+                        textEl.setAttribute('color', '#00FF00'); // สีเขียวเรืองแสง
+                        textEl.setAttribute('align', 'center');
+                        textEl.setAttribute('class', 'ar-text');
+                        
+                        // วางตำแหน่งในโลก 3 มิติ (Z = -3 คือห่างออกไป 3 เมตร)
+                        textEl.setAttribute('position', `${normX * 3} ${normY * 3} -3`);
+                        
+                        // เพิ่ม Animation ให้เด้งขยายขึ้นมา
+                        textEl.setAttribute('scale', '0 0 0');
+                        textEl.setAttribute('animation', 'property: scale; to: 1 1 1; dur: 1000; easing: easeOutElastic');
+
+                        // ใส่เข้าไปใน Scene
+                        scene.appendChild(textEl);
+                    });
+                }
+            } catch (error) {
+                console.error(error);
+                statusText.innerText = "❌ เกิดข้อผิดพลาดในการสแกน";
+            }
+
+            scanBtn.disabled = false;
+        });
+    </script>
+</body>
+</html>
